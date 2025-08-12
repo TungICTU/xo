@@ -293,17 +293,23 @@ function App() {
             tx: txRef.current,
             ty: tyRef.current
           };
+        } else {
+          // More than one finger -> allow scroll
+          isPanning.current = false;
         }
       };
       const touchMoveFn = (e) => {
-        if (!isPanning.current || e.touches.length !== 1) return;
-        e.preventDefault();
-        const dx = e.touches[0].clientX - panStart.current.x;
-        const dy = e.touches[0].clientY - panStart.current.y;
-        const newTx = panStart.current.tx + dx;
-        const newTy = panStart.current.ty + dy;
-        setTx(newTx);
-        setTy(newTy);
+        if (e.touches.length === 1 && isPanning.current) {
+          e.preventDefault();
+          const dx = e.touches[0].clientX - panStart.current.x;
+          const dy = e.touches[0].clientY - panStart.current.y;
+          const newTx = panStart.current.tx + dx;
+          const newTy = panStart.current.ty + dy;
+          setTx(newTx);
+          setTy(newTy);
+        } else {
+          // Two fingers or more: let the browser handle (scroll/zoom)
+        }
       };
       const touchEndFn = () => {
         isPanning.current = false;
