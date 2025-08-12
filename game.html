@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gomoku — PvP & PvBot (Final)</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    :root{ --panel-width:320px; }
+    html,body { height: 100%; }
+    body { font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto; background: linear-gradient(180deg,#f8fafc,#eef2ff); margin:0; padding:16px; }
+    .cell { display:flex; align-items:center; justify-content:center; user-select:none; background: white; border: 2px solid #0f172a; box-sizing: border-box; }
+    .stone-x { position: relative; width: 70%; height: 70%; }
+    .stone-x::before, .stone-x::after { content:""; position:absolute; left:50%; top:0; width:18%; height:100%; background:#dc2626; transform-origin:center; border-radius:4px; box-shadow:0 4px 8px rgba(220,38,38,0.18), inset 0 2px 4px rgba(0,0,0,0.08); }
+    .stone-x::before { transform: translateX(-50%) rotate(45deg); }
+    .stone-x::after { transform: translateX(-50%) rotate(-45deg); }
+    .stone-o-svg { width:70%; height:70%; display:block; filter: drop-shadow(0 4px 10px rgba(37,99,235,0.18)); }
+    .win-glow { box-shadow: 0 0 18px rgba(99,102,241,0.2); transform: scale(1.04); transition: transform 0.2s ease; }
+    .right-panel { position: fixed; right: 16px; top: 96px; width: var(--panel-width); max-height: calc(100vh - 128px); overflow:auto; z-index: 1200; }
+    .scoreboard { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1300; background: rgba(255,255,255,0.95); padding: 8px 14px; border-radius: 10px; box-shadow: 0 6px 20px rgba(2,6,23,0.08); font-weight:600 }
+    #turn-indicator-fixed {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  background: white;
+  padding: 6px 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  font-size: 0.9rem;
+  font-weight: 500;
+  z-index: 1000;
+}
+    @media (max-width:1100px) {
+      .right-panel { position: static; width: 100%; max-height:none; margin-top:12px; }
+      #turn-indicator-fixed { right: 12px; top: 64px; }
+      .scoreboard { left: 12px; transform: none; }
+    }
+    .board-viewport-fixed { position: relative; height: calc(100vh - 96px); overflow: hidden; display:flex; align-items:center; }
+    /* Bot thinking pulse */
+    .thinking-pill { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:8px; background:#fff; box-shadow:0 6px 18px rgba(2,6,23,0.08); font-weight:600; }
+    .pulse { width:10px; height:10px; border-radius:50%; background:#2563eb; box-shadow:0 0 8px rgba(37,99,235,0.6); animation: pulse 1s infinite; }
+    @keyframes pulse { 0% { transform: scale(1); opacity:1 } 50% { transform: scale(1.6); opacity:0.6 } 100% { transform: scale(1); opacity:1 } }
+  </style>
+
+<style>
+@media (max-width: 1024px) {
+  .gomoku-layout {
+    flex-direction: column;
+  }
+  .gomoku-board-container, .gomoku-ui-container {
+    width: 100% !important;
+  }
+}
+@media (max-width: 640px) {
+  .control-btn, .gomoku-ui-container button {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 1rem;
+  }
+}
+</style>
+
+</head>
+<body>
+  
+  <div id="turn-indicator-fixed">Turn: X</div>
+  <div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
+
+// localStorage helper
+function useLocalStorageState(key, initial) {
+  const [state, setState] = useState(() => {
+    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : initial; } catch { return initial; }
+  });
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(state)); } catch {} }, [key, state]);
+  return [state, setState];
+}
+
+function createBoard(size) { return Array(size*size).fill(null); }
+
+function checkWinner(board, size, need) {
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  for (let r=0;r<size;r++) for (let c=0;c<size;c++) {
+    const idx = r*size + c; const val = board[idx]; if (!val) continue;
+    for (const [dr,dc] of dirs) {
+      let line=[idx]; let rr=r, cc=c;
+      for (let k=1;k<need;k++){ rr+=dr; cc+=dc; if (rr<0||rr>=size||cc<0||cc>=size) break; const i2 = rr*size+cc; if (board[i2]!==val) break; line.push(i2); }
+      if (line.length===need) return { winner: val, line };
+    }
+  }
+  if (board.every(Boolean)) return { winner: 'Draw' };
+  return null;
+}
+
+// scoring helpers (same as before)
+function scoreCellFor(board, size, need, idx, player) {
+  const opponent = player === 'X' ? 'O' : 'X';
+  const r0 = Math.floor(idx/size), c0 = idx%size;
+  let score = 0;
+  const centerR = (size-1)/2, centerC = (size-1)/2;
+  const dist = Math.hypot(r0-centerR, c0-centerC);
+  score += Math.max(0, (size/2 - dist)) * 0.5;
+  const dirs = [[1,0],[0,1],[1,1],[1,-1]];
+  for (const [dr,dc] of dirs) {
+    let countF=0, openF=0;
+    for (let k=1;k<need;k++) {
+      const r=r0+dr*k, c=c0+dc*k;
+      if (r<0||r>=size||c<0||c>=size) break;
+      const v = board[r*size+c];
+      if (v===player) countF++; else { if (!v) openF++; break; }
+    }
+    let countB=0, openB=0;
+    for (let k=1;k<need;k++) {
+      const r=r0-dr*k, c=c0-dc*k;
+      if (r<0||r>=size||c<0||c>=size) break;
+      const v = board[r*size+c];
+      if (v===player) countB++; else { if (!v) openB++; break; }
+    }
+    const total = 1 + countF + countB;
+    let base = Math.pow(10, Math.min(total, 6));
+    if (openF>0 && openB>0) base *= 2;
+    score += base;
+  }
+  return score;
+}
+function evaluateAllMoves(board, size, need, botPlayer) {
+  const moves = [];
+  for (let i=0;i<size*size;i++) {
+    if (board[i]) continue;
+    const copy1 = board.slice(); copy1[i] = botPlayer;
+    const winIfBot = checkWinner(copy1, size, need);
+    if (winIfBot && winIfBot.winner===botPlayer) { moves.push({i, score: 1e12}); continue; }
+    const opponent = botPlayer==='X'?'O':'X';
+    const copy2 = board.slice(); copy2[i] = opponent;
+    const oppWin = checkWinner(copy2, size, need);
+    if (oppWin && oppWin.winner===opponent) { moves.push({i, score: 1e11}); continue; }
+    const sBot = scoreCellFor(board, size, need, i, botPlayer);
+    const sOpp = scoreCellFor(board, size, need, i, opponent);
+    const finalScore = sBot * 1.0 + sOpp * 0.9 + (size - Math.abs((i%size)-Math.floor(size/2)))*0.2;
+    moves.push({i, score: finalScore});
+  }
+  moves.sort((a,b)=>b.score-a.score);
+  return moves;
+}
+
+function App() {
+  const [size, setSize] = useLocalStorageState('gomoku_size', 15);
+  const [need, setNeed] = useLocalStorageState('gomoku_need', 5);
+  const [board, setBoard] = useLocalStorageState('gomoku_board', createBoard(15));
+  const [current, setCurrent] = useLocalStorageState('gomoku_current', 'X');
+  const [scores, setScores] = useLocalStorageState('gomoku_scores', {X:0,O:0,Draw:0});
+  const [scale, setScale] = useLocalStorageState('gomoku_scale', 1);
+  const [tx, setTx] = useLocalStorageState('gomoku_tx', 0);
+  const [ty, setTy] = useLocalStorageState('gomoku_ty', 0);
+
+  // mode & bot settings
+  const [mode, setMode] = useLocalStorageState('gomoku_mode', 'pvp');
+  const [playerSide, setPlayerSide] = useLocalStorageState('gomoku_player_side', 'X');
+  const [botLevel, setBotLevel] = useLocalStorageState('gomoku_bot_level', 7);
+  const [panelCollapsed, setPanelCollapsed] = useLocalStorageState('gomoku_panel_collapsed', false);
+
+  const wrapperRef = useRef(null);
+  useEffect(()=>{ if (playerSide !== 'X' && playerSide !== 'O') setPlayerSide('X'); }, []);
+  const scaleRef = useRef(scale); const txRef = useRef(tx); const tyRef = useRef(ty);
+  useEffect(()=>{ scaleRef.current = scale; }, [scale]);
+  useEffect(()=>{ txRef.current = tx; }, [tx]);
+  useEffect(()=>{ tyRef.current = ty; }, [ty]);
+
+  const [cellPx, setCellPx] = useState(36);
+  const [animLine, setAnimLine] = useState(null);
+  const panningRef = useRef(false);
+  const panStartRef = useRef({x:0,y:0,tx:0,ty:0});
+  const didPanRef = useRef(false);
+  const thinkingRef = useRef(false);
+  const botTimeoutRef = useRef(null);
+
+  const result = useMemo(()=> checkWinner(board, size, need), [board, size, need]);
+
+  useEffect(()=>{
+    const sb = document.getElementById('scoreboard');
+    if (sb) sb.textContent = `X: ${scores.X} | O: ${scores.O}`;
+  }, [scores]);
+
+  useEffect(()=>{
+    const el = document.getElementById('turn-indicator-fixed');
+    if (!el) return;
+    if (thinkingRef.current) {
+      el.innerHTML = `<span class="thinking-pill"><span class="pulse"></span>${current}'s turn — Bot is thinking…</span>`;
+    } else {
+      el.textContent = result ? (result.winner==='Draw' ? 'Draw' : `${result.winner} wins`) : `Turn: ${current}`;
+    }
+  }, [current, result, thinkingRef.current]);
+
+  useEffect(()=>{
+    if (!result) return;
+    if (result.winner==='Draw') setScores(s => ({...s, Draw: s.Draw+1}));
+    else setScores(s => ({...s, [result.winner]: s[result.winner]+1}));
+    setAnimLine(result.line||null);
+    const t = setTimeout(()=>{
+      setBoard(createBoard(size));
+      setAnimLine(null);
+      setCurrent('X');
+      thinkingRef.current = false;
+    }, 900);
+    return ()=> clearTimeout(t);
+  }, [result]);
+
+  useEffect(()=>{ setBoard(createBoard(size)); setAnimLine(null); }, [size]);
+
+  useEffect(()=>{
+    function calc() {
+      const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+      const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+      const reservedW = (parseInt(getComputedStyle(document.documentElement).getPropertyValue('--panel-width')) || 320) + 160;
+      const maxBoardPxW = Math.max(240, vw - reservedW);
+      const maxBoardPxH = Math.max(240, vh - 160);
+      const cellFromW = Math.floor(maxBoardPxW / size);
+      const cellFromH = Math.floor(maxBoardPxH / size);
+      const cs = Math.max(12, Math.min(56, Math.min(cellFromW, cellFromH)));
+      setCellPx(cs);
+    }
+    calc();
+    window.addEventListener('resize', calc);
+    return ()=> window.removeEventListener('resize', calc);
+  }, [size]);
+
+  // pan & wheel
+  useEffect(()=>{
+    const wheelFn = (e)=>{
+      const wr = wrapperRef.current;
+      if (!wr) return;
+      e.preventDefault();
+      const rect = wr.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const delta = -e.deltaY;
+      const zoomFactor = delta>0?1.08:0.92;
+      const oldScale = scaleRef.current || 1;
+      const newScale = Math.max(0.2, Math.min(4, oldScale*zoomFactor));
+      const bx = (px - txRef.current)/oldScale;
+      const by = (py - tyRef.current)/oldScale;
+      const newTx = px - bx*newScale;
+      const newTy = py - by*newScale;
+      setScale(newScale); setTx(newTx); setTy(newTy);
+    };
+    const downFn = (e)=>{
+      if (e.button !== undefined && e.button !== 0) return;
+      didPanRef.current = false;
+      panningRef.current = true;
+      panStartRef.current = { x: e.clientX, y: e.clientY, tx: txRef.current, ty: tyRef.current };
+      window.addEventListener('pointermove', moveFn);
+      window.addEventListener('pointerup', upFn);
+    };
+    const moveFn = (e)=>{
+      if (!panningRef.current) return;
+      const dx = e.clientX - panStartRef.current.x;
+      const dy = e.clientY - panStartRef.current.y;
+      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) didPanRef.current = true;
+      const newTx = panStartRef.current.tx + dx;
+      const newTy = panStartRef.current.ty + dy;
+      setTx(newTx); setTy(newTy);
+    };
+    const upFn = ()=>{ panningRef.current = false; window.removeEventListener('pointermove', moveFn); window.removeEventListener('pointerup', upFn); };
+    const wr = wrapperRef.current;
+    if (wr) {
+      wr.addEventListener('wheel', wheelFn, { passive: false });
+      wr.addEventListener('pointerdown', downFn);
+    }
+    return ()=>{ if (wr) { try{ wr.removeEventListener('wheel', wheelFn); wr.removeEventListener('pointerdown', downFn); } catch{} } };
+  }, []);
+
+  // Determine bot side computed per game
+  const botSideComputedRef = useRef(null);
+  useEffect(()=>{
+    if (mode==='pvb') {
+      if (playerSide==='Random') botSideComputedRef.current = Math.random()<0.5 ? 'X' : 'O';
+      else botSideComputedRef.current = (playerSide==='X') ? 'O' : 'X';
+    } else botSideComputedRef.current = null;
+  }, [mode, playerSide, board]);
+
+  // schedule bot moves
+  useEffect(()=>{
+    if (botTimeoutRef.current) { clearTimeout(botTimeoutRef.current); botTimeoutRef.current=null; thinkingRef.current=false; }
+    if (mode==='pvb' && !result && botSideComputedRef.current && botSideComputedRef.current === current) {
+      thinkingRef.current = true;
+      const el = document.getElementById('turn-indicator-fixed'); if (el) el.innerHTML = `<span class="thinking-pill"><span class="pulse"></span>${current}'s turn — Bot is thinking…</span>`;
+      const delay = 400 + Math.floor(Math.random()*600);
+      botTimeoutRef.current = setTimeout(()=>{
+        botMove();
+      }, delay);
+    } else {
+      thinkingRef.current=false;
+      const el = document.getElementById('turn-indicator-fixed'); if (el) el.textContent = result ? (result.winner==='Draw'?'Draw':`${result.winner} wins`) : `Turn: ${current}`;
+    }
+    return ()=>{ if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current); };
+  }, [mode, current, board, result]);
+
+  function handleClick(idx) {
+    if (result) return;
+    if (board[idx]) return;
+    if (mode==='pvb' && botSideComputedRef.current === current) return;
+    if (didPanRef.current) { didPanRef.current = false; return; }
+    const nb = board.slice(); nb[idx]=current; setBoard(nb); setCurrent(prev=>prev==='X'?'O':'X');
+  }
+
+  function botMove() {
+    thinkingRef.current=true;
+    const botPlayer = botSideComputedRef.current;
+    const moves = evaluateAllMoves(board, size, need, botPlayer);
+    if (moves.length===0) { thinkingRef.current=false; return; }
+    if (moves[0].score >= 1e12) { placeBot(moves[0].i); return; }
+    if (moves[0].score >= 1e11) { placeBot(moves[0].i); return; }
+    const level = Math.max(1, Math.min(10, Number(botLevel) || 7));
+    const topK = Math.max(1, 11 - level);
+    const idxChoice = Math.min(moves.length-1, Math.floor(Math.random()*Math.min(topK, moves.length)));
+    placeBot(moves[idxChoice].i);
+  }
+
+  function placeBot(idx) {
+    const nb = board.slice(); nb[idx]=botSideComputedRef.current; setBoard(nb);
+    thinkingRef.current=false; setCurrent(prev=>prev==='X'?'O':'X');
+  }
+
+  function resetMatch() { setScores({X:0,O:0,Draw:0}); setBoard(createBoard(size)); setCurrent('X'); setAnimLine(null); }
+  function newRound() { setBoard(createBoard(size)); setCurrent('X'); setAnimLine(null); }
+
+  const gap = 6;
+  const boardStyle = { transform: `translate(${tx}px, ${ty}px) scale(${scale})`, transformOrigin:'0 0' };
+  const gridStyle = { display:'grid', gridTemplateColumns: `repeat(${size}, ${cellPx}px)`, gap:`${gap}px` };
+
+  return (
+    <div>
+      <div className="scoreboard"><div className="flex items-center gap-6"><div className="text-sm text-slate-500">Round</div><div className="text-sm">X: <strong className="text-red-600">{scores.X}</strong></div><div className="text-sm">O: <strong className="text-blue-600">{scores.O}</strong></div><div className="text-sm">Draws: <strong>{scores.Draw}</strong></div></div></div>
+
+      <div style={{ paddingTop: 56 }} className="board-area">
+        <div className="board-viewport-fixed board-viewport rounded-xl p-4 relative" ref={wrapperRef} style={{padding:16}}>
+          <div style={{ width:'100%', height:'100%', position:'relative', overflow:'hidden' }}>
+            <div style={boardStyle}>
+              <div style={gridStyle}>
+                {board.map((cell, idx)=>{
+                  const isWin = animLine && animLine.includes(idx);
+                  return (
+                    <div key={idx} className={`cell bg-white rounded-lg ${isWin?'win-glow':''}`}
+                      style={{ width: cellPx, height: cellPx, minWidth: cellPx, minHeight: cellPx, display:'flex', alignItems:'center', justifyContent:'center', cursor: result ? 'default' : 'pointer' }}
+                      onClick={()=>handleClick(idx)}
+                    >
+                      <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                        {cell==='X' && <div className="stone-x" />}
+                        {cell==='O' && (
+                          <svg className="stone-o-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="50" cy="50" r="36" fill="none" stroke="#2563eb" strokeWidth="18" strokeLinecap="round" />
+                          </svg>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="right-panel">
+        <div className="p-4 bg-white rounded-xl shadow border border-slate-100">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-medium">Settings</div>
+            <button className="control-btn border bg-white" onClick={()=>setPanelCollapsed(!panelCollapsed)} title={panelCollapsed ? 'Expand' : 'Collapse'}>{panelCollapsed ? '▢' : '▣'}</button>
+          </div>
+
+          {!panelCollapsed && (
+            <div className="flex flex-col gap-3">
+              {/* Game mode + bot controls at top */}
+              <div className="flex items-center gap-2 justify-between">
+                <label className="text-sm text-slate-600">Mode</label>
+                <select value={mode} onChange={e=>setMode(e.target.value)} className="px-2 py-1 border rounded">
+                  <option value="pvp">Player vs Player</option>
+                  <option value="pvb">Player vs Bot</option>
+                </select>
+              </div>
+
+              {mode==='pvb' && (
+                <>
+                  <div className="flex items-center gap-2 justify-between">
+                    <label className="text-sm text-slate-600">Your side</label>
+                    <select value={playerSide} onChange={e=>setPlayerSide(e.target.value)} className="px-2 py-1 border rounded">
+                      <option value="X">X</option>
+                      <option value="O">O</option>
+                      
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2 justify-between">
+                    <label className="text-sm text-slate-600">Bot intelligence (1-10)</label>
+                    <input type="number" min="1" max="10" value={botLevel} onChange={e=>setBotLevel(Math.max(1,Math.min(10,Number(e.target.value)||7)))} className="px-2 py-1 border rounded w-20 text-right" />
+                  </div>
+                </>
+              )}
+
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-600">Board size (N × N)</label>
+                <input type="number" min="5" max="80" value={size} onChange={(e)=>{ const v=Math.max(5,Math.min(80,Number(e.target.value)||15)); setSize(v); setBoard(createBoard(v)); }} className="px-2 py-1 border rounded w-24" />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-600">Win length</label>
+                <input type="number" min="3" max={Math.max(3,size)} value={need} onChange={(e)=>{ const v=Math.max(3,Math.min(size,Number(e.target.value)||5)); setNeed(v); }} className="px-2 py-1 border rounded w-20" />
+              </div>
+
+              <div className="flex gap-2">
+                <button className="px-3 py-2 rounded bg-indigo-600 text-white" onClick={()=>{ setBoard(createBoard(size)); setCurrent('X'); }}>New Round</button>
+                <button className="px-3 py-2 rounded bg-slate-100" onClick={()=>{ setBoard(createBoard(size)); setCurrent('X'); }}>Clear Board</button>
+                <button className="px-3 py-2 rounded bg-rose-50 text-rose-700" onClick={()=>resetMatch()}>Reset Match</button>
+              </div>
+
+              <div className="mt-2">
+                <div className="text-xs text-slate-500">Zoom & Pan</div>
+                <div className="flex gap-2 mt-2">
+                  <button className="px-3 py-2 rounded bg-white border" onClick={()=>{ const old=scaleRef.current||1; const newScale=Math.max(0.2, old*0.9); setScale(newScale); }}>-</button>
+                  <div className="px-3 py-2 rounded bg-white border">Zoom: {Math.round(scale*100)}%</div>
+                  <button className="px-3 py-2 rounded bg-white border" onClick={()=>{ const old=scaleRef.current||1; const newScale=Math.min(4, old*1.1); setScale(newScale); }}>+</button>
+                </div>
+                <div className="text-xs text-slate-400 mt-2">Wheel to zoom. Drag to pan. Double-click board to refit.</div>
+              </div>
+
+              <div className="mt-4 text-sm text-slate-600">How to play</div>
+              <div className="text-sm text-slate-500">
+                <ul className="list-disc list-inside">
+                  <li>Click an empty cell to place your stone.</li>
+                  <li>First to {need} in a row (horizontal, vertical, or diagonal) wins.</li>
+                  <li>Use wheel to zoom and drag to pan the board. Double-click board to refit.</li>
+                </ul>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
