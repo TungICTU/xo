@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gomoku — PvP & PvBot (Final)</title>
+  <title>Gomoku</title>
 
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
@@ -63,16 +63,6 @@
     min-height: 44px;
     font-size: 1rem;
   }
-}
-</style>
-
-
-<style>
-/* Prevent iOS Safari pull-to-refresh and elastic scroll on the board */
-.board-viewport {
-  touch-action: none;
-  overflow: hidden !important;
-  -webkit-overflow-scrolling: auto !important;
 }
 </style>
 
@@ -281,44 +271,7 @@ function App() {
     const upFn = ()=>{ panningRef.current = false; window.removeEventListener('pointermove', moveFn); window.removeEventListener('pointerup', upFn); };
     const wr = wrapperRef.current;
     if (wr) {
-      
-      // --- Touch drag support for iOS ---
-      const touchStartFn = (e) => {
-        if (e.touches.length === 1) {
-          e.preventDefault();
-          isPanning.current = true;
-          panStart.current = {
-            x: e.touches[0].clientX,
-            y: e.touches[0].clientY,
-            tx: txRef.current,
-            ty: tyRef.current
-          };
-        } else {
-          // More than one finger -> allow scroll
-          isPanning.current = false;
-        }
-      };
-      const touchMoveFn = (e) => {
-        if (e.touches.length === 1 && isPanning.current) {
-          e.preventDefault();
-          const dx = e.touches[0].clientX - panStart.current.x;
-          const dy = e.touches[0].clientY - panStart.current.y;
-          const newTx = panStart.current.tx + dx;
-          const newTy = panStart.current.ty + dy;
-          setTx(newTx);
-          setTy(newTy);
-        } else {
-          // Two fingers or more: let the browser handle (scroll/zoom)
-        }
-      };
-      const touchEndFn = () => {
-        isPanning.current = false;
-      };
-
       wr.addEventListener('wheel', wheelFn, { passive: false });
-      wr.addEventListener('touchstart', touchStartFn, { passive: false });
-      wr.addEventListener('touchmove', touchMoveFn, { passive: false });
-      wr.addEventListener('touchend', touchEndFn);
       wr.addEventListener('pointerdown', downFn);
     }
     return ()=>{ if (wr) { try{ wr.removeEventListener('wheel', wheelFn); wr.removeEventListener('pointerdown', downFn); } catch{} } };
